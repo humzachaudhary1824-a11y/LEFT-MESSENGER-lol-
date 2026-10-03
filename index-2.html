@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#111827">
+<title>Private Message</title>
+<style>
+    * { box-sizing: border-box; }
+    body {
+        margin: 0;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: #111827;
+        color: #f9fafb;
+        min-height: 100vh;
+        display: flex;
+        justify-content: center;
+        padding: 24px 14px;
+    }
+    .app {
+        width: 100%;
+        max-width: 520px;
+    }
+    h1 { margin: 8px 0 4px; font-size: 28px; }
+    .sub { color: #9ca3af; margin: 0 0 22px; }
+    label {
+        display: block;
+        margin: 14px 0 7px;
+        font-weight: 600;
+    }
+    textarea, input {
+        width: 100%;
+        border: 1px solid #374151;
+        border-radius: 12px;
+        background: #1f2937;
+        color: #fff;
+        padding: 13px;
+        font: inherit;
+        outline: none;
+    }
+    textarea { min-height: 145px; resize: vertical; }
+    input:focus, textarea:focus { border-color: #9ca3af; }
+    .buttons {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-top: 14px;
+    }
+    button {
+        border: 0;
+        border-radius: 12px;
+        padding: 14px;
+        font-weight: 700;
+        font-size: 15px;
+        background: #f3f4f6;
+        color: #111827;
+    }
+    button.secondary { background: #374151; color: #fff; }
+    button:active { transform: scale(.98); }
+    .result {
+        margin-top: 18px;
+        padding: 14px;
+        border-radius: 14px;
+        background: #0b1220;
+        border: 1px solid #374151;
+    }
+    .result-title {
+        font-weight: 700;
+        margin-bottom: 8px;
+    }
+    #output {
+        white-space: pre-wrap;
+        word-break: break-all;
+        color: #d1d5db;
+        font-size: 14px;
+        min-height: 30px;
+    }
+    .copy {
+        width: 100%;
+        margin-top: 10px;
+    }
+    .status {
+        margin-top: 12px;
+        color: #a7f3d0;
+        min-height: 22px;
+        font-size: 14px;
+    }
+    .note {
+        margin-top: 22px;
+        color: #9ca3af;
+        font-size: 12px;
+        line-height: 1.5;
+    }
+</style>
+</head>
+<body>
+<div class="app">
+    <h1>🔐 Private Message</h1>
+    <p class="sub">Encrypt text before sending it through Instagram or another chat.</p>
+
+    <label for="message">Message</label>
+    <textarea id="message" placeholder="Type your private message..."></textarea>
+
+    <label for="password">Shared password</label>
+    <input id="password" type="password" placeholder="Use the password you agreed on">
+
+    <div class="buttons">
+        <button onclick="encryptText()">🔒 Encrypt</button>
+        <button class="secondary" onclick="decryptText()">🔓 Decrypt</button>
+    </div>
+
+    <div class="result">
+        <div class="result-title">Result</div>
+        <div id="output"></div>
+        <button class="copy secondary" onclick="copyResult()">📋 Copy result</button>
+    </div>
+
+    <div id="status" class="status"></div>
+
+    <div class="note">
+        Encryption and decryption happen in this browser. The password is not saved by this page.
+        Anyone who needs to decrypt a message must have the same password. This protects message
+        contents, but does not hide Instagram account information, timestamps, recipients, or other metadata.
+    </div>
+</div>
+
+<script>
+const PREFIX = "PM2.";
+const ITERATIONS = 600000;
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+
+function bytesToBase64Url(bytes) {
+    let binary = "";
+    for (const b of bytes) binary += String.fromCharCode(b);
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64UrlToBytes(str) {
+    str = str.replace(/-/g, "+").replace(/_/g, "/");
+    while (str.length % 4) str += "=";
+    const binary = atob(str);
+    return Uint8Array.from(binary, c => c.charCodeAt(0));
+}
+
+async function deriveKey(password, salt) {
+    const material = await crypto.subtle.importKey(
+        "raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]
+    );
+    return crypto.subtle.deriveKey(
+        { name: "PBKDF2", salt, iterations: ITERATIONS, hash: "SHA-256" },
+        material,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"]
+    );
+}
+
+async function encryptText() {
+    clearStatus();
+    const message = document.getElementById("message").value;
+    const password = document.getElementById("password").value;
+
+    if (!message) return setStatus("Enter a message first.", true);
+    if (!password) return setStatus("Enter a password first.", true);
+
+    try {
+        const salt = crypto.getRandomValues(new Uint8Array(16));
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const key = await deriveKey(password, salt);
+        const ciphertext = new Uint8Array(await crypto.subtle.encrypt(
+            { name: "AES-GCM", iv },
+            key,
+            enc.encode(message)
+        ));
+
+        const combined = new Uint8Array(salt.length + iv.length + ciphertext.length);
+        combined.set(salt, 0);
+        combined.set(iv, salt.length);
+        combined.set(ciphertext, salt.length + iv.length);
+
+        document.getElementById("output").textContent =
+            PREFIX + bytesToBase64Url(combined);
+        setStatus("Encrypted. Copy the entire PM2... message and send it.");
+    } catch (e) {
+        setStatus("Encryption failed.", true);
+    }
+}
+
+async function decryptText() {
+    clearStatus();
+    const encrypted = document.getElementById("message").value.trim();
+    const password = document.getElementById("password").value;
+
+    if (!encrypted) return setStatus("Paste an encrypted message first.", true);
+    if (!password) return setStatus("Enter the password first.", true);
+    if (!encrypted.startsWith(PREFIX))
+        return setStatus("This does not look like a PM2 encrypted message.", true);
+
+    try {
+        const data = base64UrlToBytes(encrypted.slice(PREFIX.length));
+        if (data.length < 29) throw new Error();
+
+        const salt = data.slice(0, 16);
+        const iv = data.slice(16, 28);
+        const ciphertext = data.slice(28);
+
+        const key = await deriveKey(password, salt);
+        const plaintext = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv },
+            key,
+            ciphertext
+        );
+
+        document.getElementById("output").textContent = dec.decode(plaintext);
+        setStatus("Decrypted successfully.");
+    } catch (e) {
+        setStatus("Decryption failed. Check the password and make sure the whole message was copied.", true);
+    }
+}
+
+async function copyResult() {
+    const text = document.getElementById("output").textContent;
+    if (!text) return setStatus("There is nothing to copy.", true);
+
+    try {
+        await navigator.clipboard.writeText(text);
+        setStatus("Copied to clipboard.");
+    } catch (e) {
+        setStatus("Copy was blocked by the browser. Select and copy the result manually.", true);
+    }
+}
+
+function setStatus(text, error=false) {
+    const s = document.getElementById("status");
+    s.textContent = text;
+    s.style.color = error ? "#fca5a5" : "#a7f3d0";
+}
+
+function clearStatus() {
+    document.getElementById("status").textContent = "";
+}
+</script>
+</body>
+</html>
